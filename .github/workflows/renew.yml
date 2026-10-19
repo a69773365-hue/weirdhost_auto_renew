@@ -1,0 +1,67 @@
+name: Weirdhost Auto Renew
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'   # 每 12 小时一次(UTC),按实际续期周期调整
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PROXY_NODE: ${{ secrets.PROXY_NODE }}   # vless:// vmess:// trojan:// ss:// socks5:// http://,留空则直连
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: Start proxy (sing-box)
+        if: env.PROXY_NODE != ''
+        run: |
+          SB_VER=1.11.4
+          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-amd64.tar.gz" | tar -xz
+          sudo mv "sing-box-${SB_VER}-linux-amd64/sing-box" /usr/local/bin/
+          node proxy.mjs
+          nohup sing-box run -c sing-box.json > sing-box.log 2>&1 &
+          ok=0
+          for i in $(seq 1 15); do
+            if curl -fsS -m 8 -x socks5h://127.0.0.1:1080 https://api.ipify.org; then ok=1; echo; break; fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "代理不可用,sing-box 日志:"; cat sing-box.log; exit 1
+          fi
+          echo "PROXY_SERVER=socks5://127.0.0.1:1080" >> "$GITHUB_ENV"
+
+      - name: Renew
+        run: node renew.mjs
+        env:
+          WEIRDHOST_COOKIE: ${{ secrets.WEIRDHOST_COOKIE }}
+          WEIRDHOST_EMAIL: ${{ secrets.WEIRDHOST_EMAIL }}
+          WEIRDHOST_PASSWORD: ${{ secrets.WEIRDHOST_PASSWORD }}
+          WEIRDHOST_SERVER_URL: ${{ secrets.WEIRDHOST_SERVER_URL }}
+          WEIRDHOST_LOGIN_URL: ${{ secrets.WEIRDHOST_LOGIN_URL }}
+          RENEW_BUTTON_TEXT: ${{ vars.RENEW_BUTTON_TEXT }}
+          CONFIRM_BUTTON_TEXT: ${{ vars.CONFIRM_BUTTON_TEXT }}
+          PROXY_SERVER: ${{ env.PROXY_SERVER || secrets.PROXY_SERVER }}
+          PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+          PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/
+          retention-days: 3
